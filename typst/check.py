@@ -1,265 +1,121 @@
 #!/usr/bin/env python3
-"""Compile typst/main.typ twice and check the PVLDB sample PDF."""
+"""Compile main.typ and compare it with the LaTeX sample output.
 
-import argparse
+Reads ../latex/main-sample-output.pdf as the reference. Text lines are matched
+by content and compared by baseline position. Needs macOS (PDFKit via swift).
+"""
+
 import re
 import subprocess
 import sys
-import textwrap
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parent
-SCRATCH_SWIFT = r"""
-import Foundation
+REF = ROOT.parent / "latex" / "main-sample-output.pdf"
+
+# Prints "page|minX|top|height|text" for every text line of each PDF.
+SWIFT = r"""
 import PDFKit
-import AppKit
-
-let pdfs = Array(CommandLine.arguments.dropFirst())
-for path in pdfs {
+for path in CommandLine.arguments.dropFirst() {
   let doc = PDFDocument(url: URL(fileURLWithPath: path))!
-  print("FILE \(path)")
-  print("pages \(doc.pageCount)")
-  guard let page0 = doc.page(at: 0) else { continue }
-  let box = page0.bounds(for: .mediaBox)
-  print(String(format: "mediabox %.3f %.3f", box.width, box.height))
-  var text = ""
+  print("FILE")
   for i in 0..<doc.pageCount {
-    text += doc.page(at: i)?.string ?? ""
-    text += "\n"
-  }
-  let marker = "-----TEXT-----"
-  print(marker)
-  print(text)
-  print("-----ENDTEXT-----")
-
-  let mid = box.midX
-  if let att = page0.attributedString {
-    let ns = att.string as NSString
-    func fontSize(_ needle: String) -> Double {
-      let range = ns.range(of: needle)
-      if range.location == NSNotFound { return -1 }
-      var size = -1.0
-      att.enumerateAttribute(.font, in: range, options: []) { value, _, _ in
-        if let font = value as? NSFont { size = Double(font.pointSize) }
-      }
-      return size
+    let page = doc.page(at: i)!
+    let box = page.bounds(for: .mediaBox)
+    for line in page.selection(for: box)?.selectionsByLine() ?? [] {
+      let b = line.bounds(for: page)
+      let s = (line.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        .replacingOccurrences(of: "\n", with: " ")
+      if !s.isEmpty { print("\(i + 1)|\(b.minX)|\(box.height - b.maxY)|\(b.height)|\(s)") }
     }
-    func minX(_ needle: String) -> Double {
-      let range = ns.range(of: needle)
-      if range.location == NSNotFound { return -1 }
-      guard let sel = page0.selection(for: range) else { return -1 }
-      return Double(sel.bounds(for: page0).minX)
-    }
-    print(String(format: "praesent-size %.3f", fontSize("Praesent")))
-    print(String(format: "praesent-x %.2f", minX("Praesent")))
-    print(String(format: "introduction-x %.2f", minX("INTRODUCTION")))
-    print(String(format: "mallard-x %.2f", minX("Mallard")))
-    print(String(format: "frequency-x %.2f", minX("Frequency of Special Characters")))
-    print(String(format: "mid %.2f", Double(mid)))
   }
 }
 """
 
-REQUIRED = (
-    "A Relational Model of Data for Large Shared Data Banks",
-    "Ben Trovato",
-    "Donald Fauntleroy Duck",
-    "Praesent imperdiet",
-    "INTRODUCTION",
-    "An illustration of a Mallard Duck",
-    "A double column table",
-    "A Wide Command Column",
-    "Frequency of Special Characters",
-    "ACKNOWLEDGMENTS",
-    "REFERENCES",
-    "patent holder's dilemma",
-    "PVLDB Reference Format",
-    "20(1)",
-    "2027",
-    "XX.XX/XXX.XX",
-    "CC BY-NC-ND 4.0",
-    "URL_TO_YOUR_ARTIFACTS",
-)
+# Font-descriptor ascent / (ascent + descent): Linux Libertine in the LaTeX
+# PDF, Libertinus Serif in the Typst PDF. Converts a line's top to its baseline.
+ASCENT = {"ref": 0.701 / 0.934, "typ": 0.89 / 1.144}
 
-TEMPLATE_ONLY = (
-    "PVLDB Reference Format",
-    "CC BY-NC-ND 4.0",
-    "The source code, data, and/or other artifacts have been made available at",
-)
+# Typst's BibTeX import drops ACM's articleno/numpages fields.
+KNOWN_BIB_DIFFS = {7, 11}
 
 
-def fail(message):
-    print(message, file=sys.stderr)
-    sys.exit(1)
+def fail(msg):
+    sys.exit(f"FAIL: {msg}")
 
 
-def compile_pdf(pdf, log_path):
-    proc = subprocess.run(
-        ["typst", "compile", "main.typ", str(pdf)],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-    log_path.write_text(proc.stdout + proc.stderr)
-    if proc.returncode != 0:
-        fail(f"typst compile failed ({pdf.name}):\n{proc.stderr}")
-    lowered = proc.stderr.lower()
-    for bad in ("error:", "not found", "does not exist", "unknown bibliography", "file not found"):
-        if bad in lowered:
-            fail(f"compile log for {pdf.name} reports a problem:\n{proc.stderr}")
-    return proc.stderr
-
-
-def inspect(pdfs):
-    swift = ROOT / ".inspect-pdf.swift"
-    swift.write_text(SCRATCH_SWIFT)
-    proc = subprocess.run(["swift", str(swift), *map(str, pdfs)], capture_output=True, text=True)
-    swift.unlink(missing_ok=True)
-    if proc.returncode != 0:
-        fail(proc.stderr)
-    return proc.stdout
-
-
-def parse_blocks(report):
-    blocks = {}
-    current = None
-    buf = []
-    meta = {}
-    for line in report.splitlines():
-        if line.startswith("FILE "):
-            if current is not None:
-                blocks[current] = (meta, "\n".join(buf))
-            current = line[5:]
-            meta = {}
-            buf = []
-            in_text = False
+def read_lines(pdfs, tmp):
+    """Per PDF: (page, column, baseline, text) for each text line, top to bottom."""
+    script = Path(tmp) / "lines.swift"
+    script.write_text(SWIFT)
+    out = subprocess.run(["swift", str(script), *map(str, pdfs)], capture_output=True, text=True, check=True)
+    raw = []
+    for line in out.stdout.splitlines():
+        if line == "FILE":
+            raw.append({})
             continue
-        if current is None:
-            continue
-        if line == "-----TEXT-----":
-            in_text = True
-            continue
-        if line == "-----ENDTEXT-----":
-            in_text = False
-            continue
-        if in_text:
-            buf.append(line)
-        elif line.startswith(("pages ", "mediabox ", "praesent-", "introduction-", "mallard-", "frequency-", "mid ")):
-            key, value = line.split(" ", 1)
-            meta[key] = value
-    if current is not None:
-        blocks[current] = (meta, "\n".join(buf))
-    return blocks
+        page, x, top, h, text = line.split("|", 4)
+        kind = "ref" if len(raw) == 1 else "typ"
+        x, base = float(x), float(top) + ASCENT[kind] * float(h)
+        # PDFKit may split one line into pieces; merge them by baseline.
+        raw[-1].setdefault((int(page), x > 306, round(base)), []).append((x, base, text))
+    docs = []
+    for groups in raw:
+        lines = []
+        for (page, col, _), pieces in sorted(groups.items()):
+            pieces.sort()
+            text = " ".join(t for *_, t in pieces).replace("\u2019", "'").removesuffix("-")
+            if not text.isdigit():  # skip page numbers
+                lines.append((page, col, pieces[0][1], text))
+        docs.append(lines)
+    return docs
+
+
+def bib_entries(lines):
+    text = " ".join(t for *_, t in lines)
+    text = re.sub(r"\s+", " ", text[text.rfind("REFERENCES") :])
+    parts = re.split(r"\[(\d+)\] ", text)
+    return {int(parts[i]): parts[i + 1].strip() for i in range(1, len(parts) - 1, 2)}
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--evidence", type=Path, help="directory for logs, text, and layout notes")
-    args = parser.parse_args()
-    evidence = args.evidence
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf = Path(tmp) / "main.pdf"
+        run = subprocess.run(["typst", "compile", "--font-path", "fonts", "main.typ", str(pdf)], cwd=ROOT, capture_output=True, text=True)
+        if run.returncode != 0:
+            fail(run.stderr)
+        ref, typ = read_lines((REF, pdf), tmp)
 
-    latex_files = (
-        "main.tex",
-        "acmart.cls",
-        "pvldb.sty",
-        "ACM-Reference-Format.bst",
-        "sample.bib",
-        "README.md",
-        "figures/duck.jpg",
-    )
-    for name in latex_files:
-        if not (REPO / "latex" / name).is_file():
-            fail(f"missing latex/{name}")
-    for name in ("main.tex", "acmart.cls", "pvldb.sty"):
-        if (REPO / name).exists():
-            fail(f"{name} is still at the repository root")
-    for name in ("main.typ", "pvldb.typ", "refs.bib", "acm.csl", "figures/duck.jpg"):
-        if not (ROOT / name).is_file():
-            fail(f"missing typst/{name}")
+    pages = (max(p for p, *_ in ref), max(p for p, *_ in typ))
+    if pages[0] != pages[1]:
+        fail(f"{pages[1]} pages, LaTeX has {pages[0]}")
 
-    main_src = (ROOT / "main.typ").read_text()
-    template_src = (ROOT / "pvldb.typ").read_text()
-    for phrase in TEMPLATE_ONLY:
-        if phrase in main_src:
-            fail(f"sample body duplicates template boilerplate: {phrase}")
-        if phrase not in template_src:
-            fail(f"template does not contain: {phrase}")
+    rb = {t: (p, c, b) for p, c, b, t in ref}
+    tb = {t: (p, c, b) for p, c, b, t in typ}
+    body = [t for t in rb if len(t) > 40]
+    same = [t for t in body if t in tb]
+    print(f"{len(same)}/{len(body)} reference lines reproduced verbatim")
+    if len(same) < 105:
+        fail("line breaking drifted from the LaTeX output")
 
-    if evidence is not None:
-        evidence.mkdir(parents=True, exist_ok=True)
-        pdf1 = evidence / "paper-1.pdf"
-        pdf2 = evidence / "paper-2.pdf"
-        log1 = evidence / "typst-1.log"
-        log2 = evidence / "typst-2.log"
-    else:
-        pdf1 = ROOT / ".paper-1.pdf"
-        pdf2 = ROOT / ".paper-2.pdf"
-        log1 = ROOT / ".typst-1.log"
-        log2 = ROOT / ".typst-2.log"
+    first3 = [t for p, _, _, t in typ if p == 3][0]
+    if first3 != "ACKNOWLEDGMENTS":
+        fail(f"page 3 starts with {first3!r}, LaTeX with 'ACKNOWLEDGMENTS'")
 
-    compile_pdf(pdf1, log1)
-    compile_pdf(pdf2, log2)
-    report = inspect((pdf1, pdf2))
-    blocks = parse_blocks(report)
-    if len(blocks) != 2:
-        fail(f"expected 2 PDF reports, got {len(blocks)}\n{report}")
+    # Page 1, left column: title, authors, abstract, PVLDB block, footnote.
+    worst = max((abs(tb[t][2] - rb[t][2]), t) for t in same if rb[t][:2] == (1, False) == tb[t][:2])
+    print(f"page 1 left column: max baseline offset {worst[0]:.2f}pt ({worst[1][:40]})")
+    if worst[0] > 1.5:
+        fail("page 1 front matter moved")
 
-    pages = []
-    text = ""
-    layout_meta = None
-    for meta, body in blocks.values():
-        pages.append(int(meta["pages"]))
-        text = body
-        layout_meta = meta
-    if pages[0] != pages[1] or pages[0] < 2:
-        fail(f"page counts must match and be at least 2, got {pages}")
-
-    missing = [s for s in REQUIRED if s not in text]
-    if missing:
-        fail("missing PDF text:\n" + "\n".join(missing))
-    if "INTRODUCTION" not in text or "REFERENCES" not in text:
-        fail("uppercase headings missing")
-    if not re.search(r"\[\d+\]", text):
-        fail("no numeric in-text citation")
-    if re.search(r"\(\d{4}\)", text) and not re.search(r"\[\d+\]", text):
-        fail("citations look author-year only")
-
-    width, height = (float(x) for x in layout_meta["mediabox"].split())
-    if abs(width - 612) > 1 or abs(height - 792) > 1:
-        fail(f"media box {width}x{height} is not US Letter")
-    size = float(layout_meta["praesent-size"])
-    if not 8 <= size <= 10:
-        fail(f"body font size {size}pt is outside 8–10pt")
-    left = float(layout_meta["introduction-x"])
-    right = float(layout_meta["frequency-x"])
-    mid = float(layout_meta["mid"])
-    if not (left < mid < right):
-        fail(f"body text is not in both columns (intro x={left}, frequency x={right}, mid={mid})")
-
-    acmart = (REPO / "latex" / "acmart.cls").stat().st_size
-    template_bytes = (ROOT / "pvldb.typ").stat().st_size
-    sample_bytes = (ROOT / "main.typ").stat().st_size
-    layout = textwrap.dedent(f"""\
-        pages {pages[0]}
-        mediabox {width:.2f} {height:.2f}
-        praesent-size {size:.3f}pt
-        introduction-x {left:.2f}
-        frequency-x {right:.2f}
-        mid {mid:.2f}
-        pvldb.typ {template_bytes} bytes
-        main.typ {sample_bytes} bytes
-        acmart.cls {acmart} bytes
-        """)
-    print(layout)
+    rbib, tbib = bib_entries(ref), bib_entries(typ)
+    flat = lambda s: re.sub(r"[\s-]", "", s)  # ignore where lines break and hyphenate
+    wrong = [k for k in rbib if k not in KNOWN_BIB_DIFFS and flat(rbib[k]) != flat(tbib.get(k, ""))]
+    print(f"{len(rbib) - len(wrong) - len(KNOWN_BIB_DIFFS)}/{len(rbib) - len(KNOWN_BIB_DIFFS)} references identical")
+    if wrong:
+        fail("references differ: " + "; ".join(f"[{k}] {rbib[k]} <> {tbib.get(k)}" for k in wrong))
     print("ok")
-    if evidence is not None:
-        (evidence / "typst.txt").write_text(text)
-        (evidence / "layout.txt").write_text(layout)
-        (evidence / "inspect.txt").write_text(report)
-    else:
-        for path in (pdf1, pdf2, log1, log2):
-            path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

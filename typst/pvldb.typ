@@ -1,29 +1,48 @@
-// Concise PVLDB layout on top of US Letter, two-column sigconf geometry.
-// Paper metadata (DOI, pages, volume, issue, year, artifact URL) is rendered
-// here. Do not copy that boilerplate into the article.
+// PVLDB layout matching `\documentclass[sigconf, nonacm]{acmart}` + pvldb.sty
+// (see ../latex/). Lengths are measured from ../latex/main-sample-output.pdf.
+//
+// Line model: every line box spans [baseline - 1em, baseline], so a vertical
+// spacing value `s` before a line of size `z` puts that baseline `s + z` below
+// the previous one. Body text is 9pt on a 10.95pt baseline grid.
 
-#let author(name, affiliation, email: none, orcid: none) = {
-  let names = if type(name) == array { name } else { (name,) }
-  let affiliations = if type(affiliation) == array { affiliation } else { (affiliation,) }
-  let emails = if email == none { () } else if type(email) == array { email } else { (email,) }
-  (names: names, affiliations: affiliations, emails: emails, orcid: orcid)
+#let _serif = "Libertinus Serif"
+// Linux Biolinum / Inconsolata / newtxmath in the LaTeX output; the OFL
+// equivalents are in fonts/ (`--font-path fonts`). Missing fonts fall back to
+// the last entry.
+#let _sans = ("Libertinus Sans", _serif)
+#let _mono = ("Inconsolata", "DejaVu Sans Mono")
+#let _math = ("Libertinus Math", "New Computer Modern Math")
+
+/// One author box. `name` and `email` take a string or an array; several
+/// names share the affiliation, as consecutive `\author` commands do in LaTeX.
+/// `affiliation` is content (use `\` for line breaks) or an array of them.
+#let author(name, affiliation, email: none) = {
+  let arr(x) = if x == none { () } else if type(x) == array { x } else { (x,) }
+  (names: arr(name), affiliations: arr(affiliation), emails: arr(email))
 }
 
-// First `columns.len()` cells are the header row. A parenthesized list of
-// content values is not an array in a named argument, so the header is positional.
-#let booktabs(columns: auto, align: left, ..cells) = {
+/// booktabs-style table: \toprule, header row, \midrule, body, \bottomrule.
+/// The first `columns` cells form the header row.
+#let booktabs(columns: 1, align: auto, ..cells) = {
   let items = cells.pos()
-  let n = columns.len()
+  let n = if type(columns) == int { columns } else { columns.len() }
+  // Rules are filled rows, so they take vertical space as in booktabs, with
+  // \aboverulesep + strut depth above \midrule and \bottomrule.
+  let row(h, fill: none) = table.cell(colspan: n, inset: 0pt, fill: fill, box(height: h))
+  let rule(w) = row(w, fill: black)
   table(
     columns: columns,
     align: align,
     stroke: none,
-    inset: (x: 4pt, y: 2.5pt),
-    table.hline(stroke: 0.6pt),
+    // The LaTeX sample measures 10pt between columns, not 2\tabcolsep = 12pt.
+    inset: (x: 5pt, top: 1.2pt, bottom: 0.75pt),
+    rule(0.72pt),
     ..items.slice(0, n),
-    table.hline(stroke: 0.3pt),
+    row(4pt),
+    rule(0.45pt),
     ..items.slice(n),
-    table.hline(stroke: 0.6pt),
+    row(4pt),
+    rule(0.72pt),
   )
 }
 
@@ -31,57 +50,75 @@
 
 #let _namelist(names) = {
   let n = names.len()
-  if n == 0 { "" }
-  else if n == 1 { names.first() }
-  else if n == 2 { names.at(0) + " and " + names.at(1) }
-  else { names.slice(0, -1).join(", ") + ", and " + names.last() }
+  if n <= 2 { names.join(" and ") } else { names.slice(0, -1).join(", ") + ", and " + names.last() }
 }
 
-#let _author-block(a) = align(center)[
-  #set par(justify: false, first-line-indent: 0pt, leading: 1pt, spacing: 0pt)
-  #text(size: 12pt)[
-    #for (i, name) in a.names.enumerate() [
-      #if i > 0 [#linebreak()]
-      #name
-      #if a.orcid != none and i == 0 [ #super(link("https://orcid.org/" + a.orcid)[#text(size: 6pt)[ID]])]
-    ]
-  ]
-  #v(2pt)
+#let _author-box(a, width) = block(width: width)[
+  #set align(center)
+  #set par(justify: false, first-line-indent: 0pt, spacing: 2pt)
+  #block(spacing: 2pt, text(size: 12pt, par(leading: 2pt, a.names.join(linebreak()))))
   #text(size: 10pt)[
-    #for (i, aff) in a.affiliations.enumerate() [
-      #if i > 0 [#linebreak()]
-      #aff
-    ]
-    #for email in a.emails [
-      #linebreak()
-      #link("mailto:" + email)[#email]
-    ]
+    #set par(leading: 2pt)
+    #(a.affiliations + a.emails.map(e => link("mailto:" + e, e))).join(linebreak())
   ]
 ]
 
-#let _author-grid(authors) = {
+// acmart sigconf: 1 author per row, 2 for two or four authors, 3 otherwise.
+// Boxes are (textwidth - 1pc) / k - 1pc wide with 1pc between them. Each box
+// borrows 6pt of the gap: microtype lets LaTeX squeeze lines that Typst
+// would wrap ("Institute for Clarity in Documentation").
+#let _authors(authors) = {
   let n = authors.len()
-  let cols = if n <= 1 { 1 } else if n == 2 or n == 4 { 2 } else { 3 }
-  grid(
-    columns: cols,
-    column-gutter: 12pt,
-    row-gutter: 12pt,
-    ..authors.map(_author-block),
-  )
+  let k = if n == 2 or n == 4 { 2 } else { calc.min(n, 3) }
+  let w = (504pt - 12pt) / k - 12pt + 6pt
+  for row in authors.chunks(k) {
+    block(above: 11.2pt, below: 0pt, align(center, stack(
+      dir: ltr,
+      spacing: 12pt - 6pt,
+      ..row.map(a => _author-box(a, w)),
+    )))
+  }
 }
 
-#let _heading(it, size, transform) = block(above: 8.5pt, below: 3pt, width: 100%)[
-  #set text(size: size, weight: "bold")
-  #set par(justify: false, first-line-indent: 0pt, spacing: 0pt)
-  #if it.numbering != none {
-    counter(heading).display()
-    h(0.65em)
-  }
-  #transform(it.body)
+// \section / \subsection: bold \large, ragged right, number + quad, section
+// titles uppercased (pvldb.sty).
+#let _heading-block(number, body) = block(
+  above: 10.35pt,
+  below: 4.69pt,
+  sticky: true,
+  width: 100%,
+)[
+  #set text(size: 10.95pt, weight: "bold", hyphenate: false)
+  #set par(justify: false, first-line-indent: 0pt, leading: 2.65pt)
+  #if number != none { number; h(10.95pt) }#body
 ]
 
-/// Article template. `body` is the paper after the title, abstract, and
-/// PVLDB front matter. `pagestyle` is `"plain"` (page numbers) or `"empty"`.
+// Typst indents a paragraph only after another paragraph. LaTeX also indents
+// after lists, display math, and in-text floats, so close them with an empty
+// paragraph. It adds one `par.spacing` (1.95pt), which the `below` values of
+// those blocks leave out.
+#let _then-indent(it) = { it; par[] }
+
+// Typst leaves a line ragged rather than stretch spaces past `max`; TeX
+// stretches it anyway. Short paragraphs whose lines must justify use this.
+#let _loose = (spacing: (min: 60%, max: 300%), tracking: (min: -0.01em, max: 0.01em))
+
+// Short captions are centered; long ones are justified with a flush-left last
+// line (caption package).
+#let _caption(it) = layout(size => {
+  let body = [#it.supplement #context it.counter.display(it.numbering)#it.separator#it.body]
+  if measure(body).width <= size.width { align(center, body) } else {
+    block(width: 100%, align(left, par(
+      justify: true,
+      first-line-indent: 0pt,
+      justification-limits: _loose,
+      body,
+    )))
+  }
+})
+
+/// Article template. `pagestyle` is `"plain"` (page numbers from page 2,
+/// the review default) or `"empty"` (camera-ready).
 #let pvldb(
   title: [],
   authors: (),
@@ -96,86 +133,136 @@
   body,
 ) = {
   set document(title: title, author: _names(authors))
-  set text(font: "Libertinus Serif", size: 9pt, lang: "en")
-  set par(
-    justify: true,
-    leading: 2pt,
-    spacing: 2pt,
-    first-line-indent: (amount: 10pt, all: false),
-  )
   set page(
     paper: "us-letter",
-    margin: (top: 57pt, bottom: 73pt, x: 54pt),
+    margin: (x: 54pt, top: 84.7pt, bottom: 84.6pt),
     columns: 2,
-    numbering: if pagestyle == "plain" { "1" } else { none },
+    footer-descent: 6pt,
+    footer: if pagestyle == "plain" {
+      context if here().page() > 1 {
+        align(center, text(size: 6pt, counter(page).display()))
+      }
+    },
   )
   set columns(gutter: 24pt)
-  set heading(numbering: "1.1")
+  // TeX takes hyphens more readily than Typst's default cost allows.
+  set text(font: _serif, size: 9pt, lang: "en", top-edge: 1em, bottom-edge: "baseline", costs: (hyphenation: 50%))
+  // acmart loads microtype, whose font expansion lets TeX fit ~4% more text
+  // per line than Typst's defaults. Extra space shrink and tracking emulate it.
+  set par(
+    justify: true,
+    leading: 1.95pt,
+    spacing: 1.95pt,
+    first-line-indent: 10pt,
+    justification-limits: (
+      spacing: (min: 60%, max: 150%),
+      tracking: (min: -0.01em, max: 0.01em),
+    ),
+  )
   set smartquote(enabled: false)
-  set list(indent: 1em, body-indent: 0.5em, spacing: 0.35em)
-  set enum(indent: 1em, body-indent: 0.5em, spacing: 0.35em)
-  set figure.caption(separator: [: ])
+
+  set heading(numbering: "1.1")
+  show heading: it => {
+    let number = if it.numbering != none { counter(heading).display(it.numbering) }
+    if it.level <= 2 {
+      _heading-block(number, if it.level == 1 { upper(it.body) } else { it.body })
+    } else {
+      // \subsubsection: sans italic at body size. LaTeX runs it into the
+      // next paragraph; Typst headings are blocks, so it gets its own line.
+      block(above: 7.4pt, below: 1.95pt, sticky: true, text(font: _sans, style: "italic")[
+        #if number != none { number; h(9pt) }#it.body.
+      ])
+    }
+  }
+
+  set list(indent: 0pt, body-indent: 4.5pt, marker: box(width: 24pt, align(right)[•]))
+  set enum(indent: 0pt, body-indent: 4.5pt, numbering: n => box(width: 24pt, align(right)[(#n)]))
+  show list: set block(above: 4.2pt, below: 2.25pt)
+  show enum: set block(above: 4.2pt, below: 2.25pt)
+  show list: _then-indent
+  show enum: _then-indent
+
   set math.equation(numbering: "(1)")
-  set bibliography(style: "acm.csl", title: [References])
+  show math.equation: set text(font: _math)
+  show math.equation.where(block: true): set block(above: 12pt, below: 6.3pt)
+  show math.equation.where(block: true): _then-indent
+
+  show raw: set text(font: _mono, size: 9pt)
+  show link: set text(fill: black)
+
+  set figure(gap: 13.1pt)
+  set figure.caption(separator: [: ])
+  show figure.where(kind: table): set figure.caption(position: top)
+  show figure.where(kind: table): set figure(gap: 15.15pt)
+  // A caption line opens a float box, so it has its natural height (6.6pt)
+  // instead of \topskip; the baseline pitch stays 10.95pt.
+  show figure.caption: set text(weight: "bold", top-edge: 6.6pt)
+  show figure.caption: set par(leading: 4.35pt)
+  show figure.caption: _caption
+  show figure: set block(above: 13pt, below: 11.05pt)
+  show figure.where(kind: table): set block(above: 15.9pt)
+  show figure: it => if it.placement == none { _then-indent(it) } else { it }
+  // \textfloatsep below a column float, \dbltextfloatsep below a page float.
+  set place(clearance: 24pt)
+  show figure.where(scope: "parent"): set place(clearance: 15pt)
+
   set footnote.entry(
-    separator: line(length: 1.6in, stroke: 0.4pt),
-    clearance: 0.5em,
-    gap: 0.35em,
+    separator: line(length: 48pt, stroke: 0.4pt),
+    clearance: 11pt,
+    gap: 0pt,
     indent: 0pt,
   )
-  show heading.where(level: 1): it => _heading(it, 10.95pt, upper)
-  show heading.where(level: 2): it => _heading(it, 10.95pt, body => body)
-  show figure.caption: set text(weight: "bold", size: 9pt)
-  show figure.where(kind: table): set figure.caption(position: top)
-  show raw: set text(font: "DejaVu Sans Mono", size: 8pt)
-  show link: set text(fill: black)
-  show bibliography: set heading(numbering: none)
+  show footnote.entry: set text(size: 7pt)
+  show footnote.entry: set par(leading: 1pt, first-line-indent: 0pt)
+
+  set bibliography(title: [References], style: "acm.csl")
   show bibliography: set text(size: 7pt)
-  show bibliography: set par(leading: 1pt, spacing: 4pt, justify: true, first-line-indent: 0pt)
+  show bibliography: set par(leading: 1pt, spacing: 1pt, first-line-indent: 0pt)
+  show bibliography: set grid(column-gutter: 4.9pt)
+  show bibliography: it => {
+    show grid.cell.where(x: 0): set align(right)
+    // Typst names @phdthesis "Doctoral dissertation"; ACM prints this.
+    show "Doctoral dissertation": "Ph. D. Dissertation"
+    // BibTeX drops the period after a title that ends in "?" or "!".
+    show regex("[?!]\.") : it => it.text.first()
+    it
+  }
 
-  place(top + center, scope: "parent", float: true, clearance: 12pt)[
-    #align(center)[
-      #set par(justify: false, first-line-indent: 0pt, leading: 3pt, spacing: 0pt)
-      #text(size: 17.28pt, weight: "bold")[#title]
-      #if authors.len() > 0 [
-        #v(12pt)
-        #_author-grid(authors)
-      ]
-    ]
-  ]
+  // \maketitle: title and author boxes across both columns.
+  place(top + center, scope: "parent", float: true, clearance: 8.26pt, {
+    set par(justify: false, first-line-indent: 0pt)
+    text(font: _sans, size: 17.28pt, weight: "bold", top-edge: 10.98pt, par(leading: 4.7pt, title))
+    v(11.83pt - 11.2pt) // title to names: 11.83pt; between author rows: 11.2pt
+    _authors(authors)
+  })
 
-  heading(level: 1, numbering: none)[Abstract]
+  _heading-block(none, upper[Abstract])
   abstract
 
+  // \vldbtopmatter
   {
     set text(size: 8pt)
-    set par(justify: false, first-line-indent: 0pt, leading: 2pt, spacing: 2pt)
-    block(above: 10pt, below: 6pt, width: 100%)[
-      #text(weight: "bold")[PVLDB Reference Format:]
-      #linebreak()
-      #(_namelist(_names(authors)) + ". ")#title#(". PVLDB, " + volume + "(" + issue + "): " + pages + ", " + year + ".")
-      #linebreak()
-      #link("https://doi.org/" + doi)[doi:#doi]
-    ]
-
-    footnote(numbering: _ => [])[
-      #set text(size: 8pt)
-      #set par(justify: false, first-line-indent: 0pt, leading: 1.4pt, spacing: 1pt)
-      This work is licensed under the Creative Commons BY-NC-ND 4.0 International License (CC BY-NC-ND 4.0). Visit #link("https://creativecommons.org/licenses/by-nc-nd/4.0/")[https://creativecommons.org/licenses/by-nc-nd/4.0/] to view a copy of this license. For any use beyond those covered by this license, obtain permission by emailing #link("mailto:info@vldb.org")[info\@vldb.org]. Copyright is held by the owner/author(s). Publication rights licensed to the VLDB Endowment.
-      #linebreak()
-      Proceedings of the VLDB Endowment, Vol. #volume, No. #issue ISSN 2150-8097.
-      #linebreak()
-      #link("https://doi.org/" + doi)[doi:#doi]
+    set par(justify: false, first-line-indent: 0pt, leading: 2pt)
+    block(above: 14.9pt, below: 0pt)[
+      *PVLDB Reference Format:* \
+      #_namelist(_names(authors)). #title. PVLDB, #volume\(#issue): #pages, #year. \
+      // The strut stands in for the footnote mark's, which lowers this line by 1pt.
+      #box(height: 9pt)#link("https://doi.org/" + doi)[doi:#doi]#footnote(numbering: _ => [])[
+        #set text(hyphenate: false)
+        #set par(justify: false)
+        This work is licensed under the Creative Commons BY-NC-ND 4.0 International License. Visit #link("https://creativecommons.org/licenses/by-nc-nd/4.0/") to view a copy of this license. For any use beyond those covered by this license, obtain permission by emailing #link("mailto:info@vldb.org")[info\@vldb.org]. Copyright is held by the owner/author(s). Publication rights licensed to the VLDB Endowment. \
+        Proceedings of the VLDB Endowment, Vol. #volume, No. #issue ISSN 2150-8097. \
+        #link("https://doi.org/" + doi)[doi:#doi]
+        #v(8pt) // pvldb.sty ends the footnote with `\\`, an empty line
+      ]
     ]
     counter(footnote).update(0)
-
-    if availability != none and str(availability).len() > 0 {
-      let url = str(availability)
-      block(above: 8pt, below: 8pt, width: 100%)[
-        #text(weight: "bold")[PVLDB Artifact Availability:]
-        #linebreak()
-        The source code, data, and/or other artifacts have been made available at #if url.starts-with("http://") or url.starts-with("https://") { link(url)[#url] } else { url }.
-      ]
+    if availability not in (none, "") {
+      // Its \par comes after \endgroup in pvldb.sty, so it is justified.
+      block(above: 10.5pt, below: 0pt, width: 100%, par(justify: true, leading: 2.95pt, justification-limits: _loose)[
+        *PVLDB Artifact Availability:* \
+        The source code, data, and/or other artifacts have been made available at #link(availability).
+      ])
     }
   }
 
