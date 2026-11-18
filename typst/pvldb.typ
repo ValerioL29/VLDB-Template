@@ -1,14 +1,14 @@
-// PVLDB layout matching `\documentclass[sigconf, nonacm]{acmart}` + pvldb.sty
-// (see ../latex/). Lengths are measured from ../latex/main-sample-output.pdf.
+// PVLDB layout matching `\documentclass[sigconf, nonacm]{acmart}` + pvldb.sty.
+// Lengths are measured from main-sample-output.pdf of the official template
+// (https://github.com/vldbproceedings/VLDB-Template).
 //
 // Line model: every line box spans [baseline - 1em, baseline], so a vertical
 // spacing value `s` before a line of size `z` puts that baseline `s + z` below
 // the previous one. Body text is 9pt on a 10.95pt baseline grid.
 
 #let _serif = "Libertinus Serif"
-// Linux Biolinum / Inconsolata / newtxmath in the LaTeX output; the OFL
-// equivalents are in fonts/ (`--font-path fonts`). Missing fonts fall back to
-// the last entry.
+// Linux Biolinum / Inconsolata / newtxmath in the LaTeX output. Packages can't
+// ship fonts; see the README. Missing fonts fall back to the last entry.
 #let _sans = ("Libertinus Sans", _serif)
 #let _mono = ("Inconsolata", "DejaVu Sans Mono")
 #let _math = ("Libertinus Math", "New Computer Modern Math")

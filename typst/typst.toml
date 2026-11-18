@@ -1,0 +1,17 @@
+[package]
+name = "mimic-pvldb"
+version = "0.1.0"
+entrypoint = "pvldb.typ"
+authors = ["ValerioL29 <@ValerioL29>"]
+license = "MIT-0"
+description = "Papers for the Proceedings of the VLDB Endowment (PVLDB)."
+repository = "https://github.com/ValerioL29/VLDB-Template"
+keywords = ["PVLDB", "VLDB", "Proceedings of the VLDB Endowment", "VLDB Endowment", "database", "acmart", "sigconf"]
+categories = ["paper"]
+disciplines = ["computer-science"]
+compiler = "0.15.0"
+
+[template]
+path = "template"
+entrypoint = "main.typ"
+thumbnail = "thumbnail.png"

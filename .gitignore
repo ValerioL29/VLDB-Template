@@ -7,3 +7,4 @@ latex/*.fls
 latex/*.fdb_latexmk
 latex/*.synctex.gz
 typst/*.pdf
+typst/build/
